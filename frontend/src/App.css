@@ -1,0 +1,17 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+// FIX: Renamed the imported variable to align with standard convention (App) 
+// but still pointing to App.jsx, which contains the InspectraSecureApp component.
+import App from './App.jsx'; 
+import './index.css'; 
+
+// Finds the root element in the HTML
+const container = document.getElementById('root');
+const root = createRoot(container);
+
+// Renders the main application component
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

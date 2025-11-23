@@ -1,0 +1,215 @@
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const crypto = require('crypto');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+
+const app = express();
+const PORT = 3001;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+// ---------------------------------------------------------------------------
+// 🔑 API KEY CONFIGURATION
+// ---------------------------------------------------------------------------
+// STEP 1: Get HIBP Key (Optional/Paid): https://haveibeenpwned.com/API/Key
+const HIBP_API_KEY = "YOUR_HIBP_API_KEY_GOES_HERE"; 
+
+// STEP 2: Get VirusTotal Key (Free): https://www.virustotal.com/gui/join-us
+const VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY_GOES_HERE"; 
+
+// STEP 3: Get Gemini API Key (Free): https://aistudio.google.com/app/apikey
+const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_GOES_HERE";
+// ---------------------------------------------------------------------------
+
+// Check for missing keys on startup
+if (HIBP_API_KEY.includes("GOES_HERE") || VIRUSTOTAL_API_KEY.includes("GOES_HERE") || GEMINI_API_KEY.includes("GOES_HERE")) {
+    console.warn("\n⚠️  WARNING: One or more API keys are still set to placeholders in server.js!");
+    console.warn("⚠️  Please update server.js with your actual keys for full functionality.\n");
+}
+
+// --- MIDDLEWARE ---
+app.use(cors({
+    origin: ['http://localhost:3000', 'http://localhost:5173'],
+    methods: 'GET,POST',
+}));
+app.use(express.json());
+
+// Configure Multer
+const storage = multer.memoryStorage();
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: MAX_FILE_SIZE }
+});
+
+app.use((err, req, res, next) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File too large. Max size is 10MB.' });
+    }
+    next(err);
+});
+
+// --- GEMINI API ENDPOINT ---
+app.post('/api/gemini', async (req, res) => {
+    const { userQuery, systemPrompt, isGrounded } = req.body;
+
+    if (!userQuery) {
+        return res.status(400).json({ error: 'User query is required.' });
+    }
+
+    // Use Gemini 1.5 Flash for speed and efficiency
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    
+    const tools = isGrounded ? [{ "google_search": {} }] : [];
+
+    const payload = {
+        contents: [{ parts: [{ text: userQuery }] }],
+        tools: tools,
+        systemInstruction: { parts: [{ text: systemPrompt || "You are a helpful assistant." }] },
+    };
+
+    try {
+        const response = await axios.post(apiUrl, payload, {
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        res.json(response.data);
+    } catch (error) {
+        console.error('Gemini API Error:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to communicate with Gemini API.' });
+    }
+});
+
+// --- HIBP ENDPOINTS ---
+app.post('/api/hibp/email', async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
+
+    try {
+        const response = await axios.get(`https://haveibeenpwned.com/api/v3/breachedaccount/${email}`, {
+            headers: {
+                'hibp-api-key': HIBP_API_KEY,
+                'User-Agent': 'InspectraSecure-Toolkit'
+            },
+            validateStatus: (status) => status === 200 || status === 404
+        });
+
+        if (response.status === 404) return res.status(404).json({ message: 'No breaches found.' });
+        res.json(response.data);
+    } catch (error) {
+        console.error('HIBP Error:', error.message);
+        res.status(500).json({ error: "Failed to query HIBP or invalid key." });
+    }
+});
+
+app.post('/api/hibp/password', async (req, res) => {
+    const { hashPrefix, hashSuffix } = req.body;
+    if (!hashPrefix || !hashSuffix) return res.status(400).json({ error: 'Invalid hash.' });
+
+    try {
+        const response = await axios.get(`https://api.pwnedpasswords.com/range/${hashPrefix}`, {
+            headers: { 'User-Agent': 'InspectraSecure-Toolkit' }
+        });
+        const matches = response.data.split('\r\n');
+        let pwnedCount = 0;
+        for (const line of matches) {
+            const [suffix, count] = line.split(':');
+            if (suffix === hashSuffix) {
+                pwnedCount = parseInt(count);
+                break;
+            }
+        }
+        res.json({ pwnedCount });
+    } catch (error) {
+        console.error('HIBP Password Error:', error.message);
+        res.status(500).json({ error: 'Failed to query Pwned Passwords API.' });
+    }
+});
+
+// --- VIRUSTOTAL ENDPOINTS ---
+app.post('/api/virustotal/url', async (req, res) => {
+    const { indicator } = req.body;
+    if (!indicator) return res.status(400).json({ error: 'Indicator required.' });
+
+    let endpoint;
+    const isHash = /^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/.test(indicator);
+
+    if (isHash) {
+        endpoint = `/files/${indicator}`;
+    } else {
+        endpoint = '/urls';
+    }
+
+    try {
+        let response;
+        if (isHash) {
+             response = await axios.get(`https://www.virustotal.com/api/v3${endpoint}`, {
+                headers: { 'x-apikey': VIRUSTOTAL_API_KEY }
+            });
+        } else {
+             response = await axios.post(`https://www.virustotal.com/api/v3${endpoint}`, `url=${encodeURIComponent(indicator)}`, {
+                headers: { 
+                    'x-apikey': VIRUSTOTAL_API_KEY,
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+            });
+        }
+
+        const data = response.data.data;
+        
+        if (isHash && data.attributes) {
+             const stats = data.attributes.last_analysis_stats;
+             res.json({ 
+                 success: true, 
+                 status: stats.malicious > 0 ? 'malicious' : 'clean',
+                 detections: stats.malicious,
+                 message: 'File hash found in database.'
+             });
+        } else {
+             res.json({ success: true, message: `Scan queued. ID: ${data.id}.` });
+        }
+
+    } catch (error) {
+        console.error('VirusTotal Error:', error.message);
+        res.status(500).json({ error: 'VirusTotal request failed.' });
+    }
+});
+
+app.post('/api/virustotal/file', upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+
+    try {
+        const formData = new FormData();
+        formData.append('file', req.file.buffer, req.file.originalname);
+        
+        const response = await axios.post('https://www.virustotal.com/api/v3/files', formData, {
+            headers: {
+                'x-apikey': VIRUSTOTAL_API_KEY,
+                ...formData.getHeaders()
+            }
+        });
+        
+        res.json({ success: true, message: `File uploaded. Scan ID: ${response.data.data.id}` });
+    } catch (error) {
+        console.error('VirusTotal Upload Error:', error.message);
+        res.status(500).json({ error: 'File upload failed.' });
+    }
+});
+
+// --- METADATA (Simulated) ---
+app.post('/api/metadata/extract', upload.single('file'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file.' });
+    
+    const metadata = {
+        'File Name': req.file.originalname,
+        'Size': `${(req.file.size / 1024).toFixed(2)} KB`,
+        'Type': req.file.mimetype,
+        'Analysis': 'Metadata extraction is simulated in this demo environment.'
+    };
+    res.json({ metadata });
+});
+
+app.listen(PORT, () => {
+    console.log(`InspectraSecure Backend running on http://localhost:${PORT}`);
+});
