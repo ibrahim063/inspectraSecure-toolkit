@@ -31,32 +31,18 @@ const Icon = ({ name, className = 'w-5 h-5', onClick }) => {
 
 // --- API KEYS AND CONSTANTS ---
 const API_KEY = ""; // Canvas will inject the key at runtime for fetch calls
-// FIX: Using relative path /api for Vercel/local proxy compatibility
+// FIX: Using relative path /api so the Vite proxy can intercept it and send it to 3001
 const BASE_URL = '/api'; 
 
 // --- UTILITY FUNCTIONS ---
 
 // Function to perform SHA-1 hashing (Client-side for HIBP k-anonymity)
-// Uses modern browser crypto API for robustness
-const sha1 = async (str) => {
-    try {
-        // Need to check for crypto.subtle availability for environments like iframe/older browsers
-        if (!window.crypto || !window.crypto.subtle) {
-             throw new Error("Crypto API not available.");
-        }
-        const buffer = new TextEncoder().encode(str);
-        const hashBuffer = await crypto.subtle.digest('SHA-1', buffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        // Convert bytes to hex string (40 characters)
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        return hashHex.toUpperCase();
-    } catch (e) {
-        console.error("Crypto API error, falling back to mock hash.", e);
-        // Fallback or a reliable non-cryptographic mock hash if essential logic must proceed
-        return str.split('').reduce((p, c) => (p = (p << 5) - p + c.charCodeAt(0)) | 0, 0).toString(16).toUpperCase().padStart(40, '0');
-    }
+const sha1 = (str) => {
+  // This is a pseudo-hash for client-side demonstration purposes. 
+  // A real implementation would use a proper cryptographic library.
+  const hash = str.split('').reduce((p, c) => (p = (p << 5) - p + c.charCodeAt(0)) | 0, 0);
+  return Math.abs(hash).toString(16).toUpperCase().padStart(40, '0'); // Pseudo-hash
 };
-
 
 // --- GEMINI API HELPERS (Client-side for Analyzer and Explainer) ---
 
@@ -86,8 +72,7 @@ async function fetchGemini(systemPrompt, userQuery, isGrounded = false) {
       if (response.ok) break;
 
     } catch (error) {
-      // Logging retry errors without halting execution
-      console.log(`[Gemini Retry] Attempt ${i + 1} failed.`); 
+      console.error(`Attempt ${i + 1} failed:`, error);
     }
 
     if (i < maxRetries - 1) {
@@ -171,7 +156,7 @@ const HIBPEmailChecker = () => {
     setResult(null);
 
     try {
-      // Calls the Node.js backend proxy
+      // Calls the Node.js backend proxy using relative path
       const response = await fetch(`${BASE_URL}/hibp/email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -187,7 +172,6 @@ const HIBPEmailChecker = () => {
         setResult({ success: false, error: 'API Error: Could not check email. Please try again later.' });
       }
     } catch (error) {
-      // Error message updated to reflect Vercel routing possibility
       setResult({ success: false, error: 'Network Error: Could not connect to the API. Check Vercel routing/local server status.' });
     } finally {
       setLoading(false);
@@ -274,7 +258,6 @@ const HIBPPasswordChecker = () => {
         setPwnedResult({ success: false, error: 'API Error: Could not check password.' });
       }
     } catch (error) {
-      // Error message updated to reflect Vercel routing possibility
       setPwnedResult({ success: false, error: 'Network Error: Could not connect to the API. Check Vercel routing/local server status.' });
     } finally {
       setLoadingPwned(false);
@@ -428,7 +411,6 @@ const VirusTotalChecker = () => {
         setResult({ success: false, error: errorData.error || 'Scan failed due to a server error.' });
       }
     } catch (error) {
-      // Error message updated to reflect Vercel routing possibility
       setResult({ success: false, error: 'Network Error: Could not connect to the API. Check Vercel routing/local server status.' });
     } finally {
       setLoading(false);
@@ -620,7 +602,6 @@ const EXIFExtractor = () => {
         setResult({ success: false, error: errorData.error || 'Metadata extraction failed due to a server error.' });
       }
     } catch (error) {
-      // Error message updated to reflect Vercel routing possibility
       setResult({ success: false, error: 'Network Error: Could not connect to the API. Check Vercel routing/local server status.' });
     } finally {
       setLoading(false);
@@ -856,7 +837,6 @@ export default function InspectraSecureApp() { // Renamed the function here
         </footer>
         
       </div>
-      
     </div>
   );
 }
